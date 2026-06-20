@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="NogoCore Block Explorer - Explore blocks, transactions, and addresses on the NogoChain network.">
+    <meta name="theme-color" content="#080c14">
+    <meta property="og:title" content="NogoCore Block Explorer">
+    <meta property="og:description" content="Real-time NogoChain network explorer. Search blocks, transactions, and addresses.">
+    <meta property="og:image" content="/og.png">
+    <meta property="og:type" content="website">
+    <title>NogoCore Block Explorer</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
+    <link rel="stylesheet" href="css/explorer.css">
+    <script src="js/explorer.js" defer></script>
+</head>
+<body>
+    <!-- Debug Bar -->
+    <div id="debugBar" style="position:fixed;bottom:0;left:0;right:0;background:#1a1a2e;color:#00d4aa;padding:4px 16px;font-size:11px;font-family:monospace;z-index:9999;border-top:1px solid #00d4aa33;opacity:0.9">[Explorer] JS loading...</div>
+    <!-- Navigation Bar -->
+    <nav class="navbar" role="navigation" aria-label="Main navigation">
+        <div class="nav-inner">
+            <a href="/" class="nav-brand" aria-label="NogoCore Explorer Home">
+                <span class="brand-icon">&#x25C8;</span>
+                <span class="brand-text">NogoCore<span class="brand-accent">Explorer</span></span>
+            </a>
+            <div class="nav-search">
+                <div class="search-wrapper">
+                    <input type="text" id="globalSearch" class="search-input"
+                           placeholder="Block height / Hash / TX hash / Address..."
+                           aria-label="Global search" autocomplete="off">
+                    <button id="searchBtn" class="search-btn" aria-label="Search" title="Search">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="searchResults" class="search-results" role="listbox" hidden></div>
+            </div>
+            <div class="nav-links">
+                <a href="#dashboard" class="nav-link active" data-nav="dashboard">Dashboard</a>
+                <a href="#blocks" class="nav-link" data-nav="blocks">Blocks</a>
+                <a href="#mempool" class="nav-link" data-nav="mempool">Mempool</a>
+                <span id="networkBadge" class="network-badge">MainNet</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content" role="main">
+        <!-- Dashboard View -->
+        <section id="view-dashboard" class="view active">
+            <header class="view-header">
+                <h1 class="view-title">Network Dashboard</h1>
+                <p class="view-subtitle">Real-time NogoChain network status and statistics</p>
+            </header>
+
+            <!-- Stats Grid -->
+            <div class="stats-grid" id="statsGrid">
+                <article class="stat-card">
+                    <div class="stat-icon" style="--card-accent: #00d4aa">&#x25B2;</div>
+                    <div class="stat-body">
+                        <span class="stat-label">Block Height</span>
+                        <span class="stat-value" id="statHeight">--</span>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div class="stat-icon" style="--card-accent: #6c5ce7">&#x25C9;</div>
+                    <div class="stat-body">
+                        <span class="stat-label">Latest Block Hash</span>
+                        <span class="stat-value stat-hash" id="statBestHash">--</span>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div class="stat-icon" style="--card-accent: #fdcb6e">&#x29D6;</div>
+                    <div class="stat-body">
+                        <span class="stat-label">Difficulty</span>
+                        <span class="stat-value" id="statDifficulty">--</span>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div class="stat-icon" style="--card-accent: #e17055">&#x2691;</div>
+                    <div class="stat-body">
+                        <span class="stat-label">Mempool TXs</span>
+                        <span class="stat-value" id="statMempool">--</span>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div class="stat-icon" style="--card-accent: #00b894">&#x2302;</div>
+                    <div class="stat-body">
+                        <span class="stat-label">Block Time</span>
+                        <span class="stat-value" id="statBlockTime">--</span>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div class="stat-icon" style="--card-accent: #a29bfe">&#x26A1;</div>
+                    <div class="stat-body">
+                        <span class="stat-label">Est. Hashrate</span>
+                        <span class="stat-value" id="statHashrate">--</span>
+                    </div>
+                </article>
+            </div>
+
+            <!-- Recent Blocks -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Recent Blocks</h2>
+                    <a href="#blocks" class="panel-action">View All &rarr;</a>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="recentBlocksTable">
+                        <thead>
+                            <tr>
+                                <th>Height</th>
+                                <th>Hash</th>
+                                <th>TXs</th>
+                                <th>Size</th>
+                                <th>Age</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentBlocksBody">
+                            <tr class="table-empty"><td colspan="5">Loading blocks...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <!-- Blocks List View -->
+        <section id="view-blocks" class="view">
+            <header class="view-header">
+                <h1 class="view-title">Blocks</h1>
+            </header>
+            <div class="table-container">
+                <table class="data-table" id="allBlocksTable">
+                    <thead>
+                        <tr>
+                            <th>Height</th>
+                            <th>Hash</th>
+                            <th>TXs</th>
+                            <th>Size (B)</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody id="allBlocksBody">
+                        <tr class="table-empty"><td colspan="5">Loading blocks...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination" id="blocksPagination" hidden>
+                <button class="page-btn" id="blocksPrev" aria-label="Previous page">&larr; Prev</button>
+                <span class="page-info" id="blocksPageInfo">Page 1</span>
+                <button class="page-btn" id="blocksNext" aria-label="Next page">Next &rarr;</button>
+            </div>
+        </section>
+
+        <!-- Block Detail View -->
+        <section id="view-block" class="view">
+            <header class="view-header">
+                <button class="back-btn" data-back="dashboard" aria-label="Go back">&larr; Back</button>
+                <h1 class="view-title">Block <span id="blockDetailHeight">#--</span></h1>
+            </header>
+            <div class="detail-card" id="blockDetailCard">
+                <div class="detail-grid">
+                    <div class="detail-item"><span class="detail-label">Hash</span><span class="detail-value hash" id="bdHash">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Previous Block</span><span class="detail-value hash" id="bdPrevBlock">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Merkle Root</span><span class="detail-value hash" id="bdMerkleRoot">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Timestamp</span><span class="detail-value" id="bdTimestamp">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Version</span><span class="detail-value" id="bdVersion">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Bits</span><span class="detail-value" id="bdBits">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Nonce</span><span class="detail-value" id="bdNonce">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Size</span><span class="detail-value" id="bdSize">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Transactions</span><span class="detail-value" id="bdTxCount">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Difficulty</span><span class="detail-value" id="bdDifficulty">--</span></div>
+                </div>
+            </div>
+            <section class="panel">
+                <div class="panel-header"><h2 class="panel-title">Transactions</h2></div>
+                <div class="table-container">
+                    <table class="data-table" id="blockTxsTable">
+                        <thead><tr><th>#</th><th>Transaction Hash</th></tr></thead>
+                        <tbody id="blockTxsBody"><tr class="table-empty"><td colspan="2">No transactions</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <!-- Transaction Detail View -->
+        <section id="view-tx" class="view">
+            <header class="view-header">
+                <button class="back-btn" data-back="dashboard" aria-label="Go back">&larr; Back</button>
+                <h1 class="view-title">Transaction</h1>
+            </header>
+            <div class="detail-card" id="txDetailCard">
+                <div class="detail-grid">
+                    <div class="detail-item"><span class="detail-label">TXID</span><span class="detail-value hash" id="tdTxid">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Size</span><span class="detail-value" id="tdSize">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Status</span><span class="detail-value" id="tdStatus">--</span></div>
+                </div>
+            </div>
+            <section class="panel">
+                <div class="panel-header"><h2 class="panel-title">Inputs</h2></div>
+                <div id="txInputsBody" class="io-list"><p class="empty-message">No inputs</p></div>
+            </section>
+            <section class="panel">
+                <div class="panel-header"><h2 class="panel-title">Outputs</h2></div>
+                <div id="txOutputsBody" class="io-list"><p class="empty-message">No outputs</p></div>
+            </section>
+        </section>
+
+        <!-- Address View -->
+        <section id="view-address" class="view">
+            <header class="view-header">
+                <button class="back-btn" data-back="dashboard" aria-label="Go back">&larr; Back</button>
+                <h1 class="view-title">Address</h1>
+            </header>
+            <div class="detail-card" id="addrDetailCard">
+                <div class="detail-grid">
+                    <div class="detail-item"><span class="detail-label">Address</span><span class="detail-value hash" id="adAddress">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Balance</span><span class="detail-value balance-value" id="adBalance">--</span></div>
+                    <div class="detail-item"><span class="detail-label">Total Transactions</span><span class="detail-value" id="adTxCount">--</span></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Mempool View -->
+        <section id="view-mempool" class="view">
+            <header class="view-header">
+                <button class="back-btn" data-back="dashboard" aria-label="Go back">&larr; Back</button>
+                <h1 class="view-title">Mempool</h1>
+                <p class="view-subtitle">Unconfirmed transactions pending inclusion in a block</p>
+            </header>
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Pending Transactions</h2>
+                    <span id="mempoolCount" class="network-badge">0 txs</span>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="mempoolTable">
+                        <thead>
+                            <tr>
+                                <th>Transaction Hash</th>
+                                <th>Size (B)</th>
+                                <th>Fee</th>
+                                <th>Inputs</th>
+                                <th>Outputs</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mempoolTxsBody">
+                            <tr class="table-empty"><td colspan="5">Loading mempool...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Error View -->
+        <section id="view-error" class="view">
+            <div class="error-state">
+                <span class="error-icon">&#x26A0;</span>
+                <h2 class="error-title">Not Found</h2>
+                <p class="error-message" id="errorMessage">The requested resource was not found on the chain.</p>
+                <button class="btn-primary" data-back="dashboard">Return to Dashboard</button>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <span>NogoCore Block Explorer &copy; 2026</span>
+        <span class="footer-divider">|</span>
+        <span>Powered by NogoCore JSON-RPC</span>
+        <span class="footer-divider">|</span>
+        <span id="footerStats">Connecting...</span>
+    </footer>
+</body>
+</html>
