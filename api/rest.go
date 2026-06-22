@@ -135,6 +135,14 @@ func (s *Server) registerStaticFiles() {
 				http.NotFound(w, r)
 				return
 			}
+			// Serve actual static files (images, icons, etc.) if they exist.
+			if r.URL.Path != "/" {
+				filePath := filepath.Join(staticDir, r.URL.Path)
+				if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+					http.ServeFile(w, r, filePath)
+					return
+				}
+			}
 			http.ServeFile(w, r, inlinePath)
 		})
 		log.Printf("[API] Serving inline explorer from: %s", inlinePath)
