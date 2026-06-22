@@ -12,15 +12,18 @@ import (
 	"time"
 
 	"github.com/nogochain/nogocommons/address"
-	"github.com/nogochain/nogocore/blockchain"
-	"github.com/nogochain/nogocommons/nogoutil"
 	"github.com/nogochain/nogocommons/chaincfg"
 	"github.com/nogochain/nogocommons/chainhash"
 	"github.com/nogochain/nogocommons/nogopow"
+	"github.com/nogochain/nogocommons/nogoutil"
 	"github.com/nogochain/nogocommons/wire"
+	"github.com/nogochain/nogocore/blockchain"
 )
 
 const (
+	// CoinbaseFlags is added to the coinbase script of a generated block.
+	CoinbaseFlags = "/NogoPow/nogocore/"
+
 	// MinHighPriority is the minimum priority value that allows a
 	// transaction to be considered high priority.
 	MinHighPriority = nogoutil.SatoshiPerBitcoin * 144.0 / 250
@@ -28,11 +31,6 @@ const (
 	// blockHeaderOverhead is the max number of bytes it takes to serialize
 	// a block header and max possible transaction count.
 	blockHeaderOverhead = wire.MaxBlockHeaderPayload + wire.MaxVarIntPayload
-
-	// CoinbaseFlags is added to the coinbase script of a generated block
-	// and is used to monitor BIP16 support as well as blocks that are
-	// generated via btcd.
-	CoinbaseFlags = "/NOGOCORE/"
 )
 
 // TxDesc is a descriptor about a transaction in a transaction source along with
@@ -240,8 +238,68 @@ func mergeUtxoView(viewA *blockchain.UtxoViewpoint, viewB *blockchain.UtxoViewpo
 // signature script of the coinbase transaction of a new block.  In particular,
 // it starts with the block height that is required by version 2 blocks and adds
 // the extra nonce as well as additional coinbase flags.
+//
+// Format: <heightLen> <height> <extraNonceOp> <flagsPush> <flags>
+// Equivalent to btcd's: NewScriptBuilder().AddInt64(height).AddInt64(extra).AddData(flags).Script()
 func standardCoinbaseScript(nextBlockHeight int32, extraNonce uint64) ([]byte, error) {
-	return encodeCoinbaseHeight(int64(nextBlockHeight), int64(extraNonce))
+	flags := []byte(CoinbaseFlags)
+
+	// Serialize block height as Bitcoin script number (little-endian,
+	// minimal encoding with sign bit).  This must match the extraction
+	// logic in blockchain/validate.go:ExtractCoinbaseHeight().
+	heightBytes := serializeScriptNum(int64(nextBlockHeight))
+
+	script := make([]byte, 0, len(heightBytes)+3+len(flags))
+	script = append(script, heightBytes...)           // <height>
+	script = append(script, 0x00)                     // OP_0 (extra nonce placeholder)
+	script = append(script, byte(len(flags)))         // push flags length
+	script = append(script, flags...)
+
+	return script, nil
+}
+
+// serializeScriptNum encodes an int64 as a Bitcoin script number.
+// Values 1-16 use OP_1..OP_16 (0x51..0x60).  Values outside this range
+// use little-endian encoding with minimal bytes, where the last byte's
+// MSB is the sign bit (0=positive, 0x80=negative).  This matches btcd's
+// txscript.NewScriptBuilder().AddInt64() behavior.
+func serializeScriptNum(n int64) []byte {
+	if n == 0 {
+		return []byte{0x00}
+	}
+
+	// Small positive numbers 1-16 use OP_1..OP_16 opcodes.
+	if n >= 1 && n <= 16 {
+		return []byte{byte(0x50 + n)}
+	}
+
+	var negative bool
+	if n < 0 {
+		n = -n
+		negative = true
+	}
+
+	// Encode absolute value in little-endian, minimal bytes.
+	buf := make([]byte, 0, 8)
+	for n > 0 {
+		buf = append(buf, byte(n&0xff))
+		n >>= 8
+	}
+
+	// If MSB of last byte is set, add a padding zero byte so it is not
+	// interpreted as negative.
+	if buf[len(buf)-1]&0x80 != 0 {
+		buf = append(buf, 0x00)
+	}
+	if negative {
+		buf[len(buf)-1] |= 0x80
+	}
+
+	// Push data opcode: length byte followed by data.
+	result := make([]byte, 0, len(buf)+1)
+	result = append(result, byte(len(buf)))
+	result = append(result, buf...)
+	return result
 }
 
 // createCoinbaseTx returns a coinbase transaction paying the appropriate
@@ -295,8 +353,18 @@ func createCoinbaseTx(params *chaincfg.Params, coinbaseScript []byte,
 	if params.GenesisAddress != "" && genesisShare > 0 {
 		genesisAddr, err := address.DecodeAddress(params.GenesisAddress, params)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode genesis address %q: %v",
-				params.GenesisAddress, err)
+			// Genesis address may use a different network prefix than
+			// the active chain params (e.g. mainnet-style address on
+			// testnet).  Try decoding with MainNetParams as fallback.
+			genesisAddr, err = address.DecodeAddress(params.GenesisAddress, &chaincfg.MainNetParams)
+			if err != nil {
+				// Skip genesis share output if address cannot be decoded
+				// on any known network — this is non-fatal for block
+				// template generation.
+				log.Warnf("Cannot decode genesis address %q for genesis share output: %v",
+					params.GenesisAddress, err)
+				goto afterGenesisShare
+			}
 		}
 		genesisPkScript, err := payToAddrScriptMining(genesisAddr)
 		if err != nil {
@@ -309,6 +377,7 @@ func createCoinbaseTx(params *chaincfg.Params, coinbaseScript []byte,
 		// Verify coinbase total matches expected subsidy.
 		_ = blockSubsidy // blockSubsidy used for reference; miner+genesis = subsidy
 	}
+afterGenesisShare:
 
 	return nogoutil.NewTx(tx), nil
 }

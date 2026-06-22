@@ -53,6 +53,9 @@ type config struct {
 	DebugLevel string `long:"debuglevel" description:"Logging level {trace, debug, info, warn, error, critical}"`
 	CPUProfile string `long:"cpuprofile" description:"Write CPU profile to the specified file"`
 
+	// Network
+	TestNet3 bool `long:"testnet" description:"Use the test network (version 3)"`
+
 	// P2P
 	Listen              []string      `long:"listen" description:"Add an interface/port to listen for connections"`
 	ExternalIPs         []string      `long:"externalip" description:"Add an ip to the list of local addresses we claim to listen on"`
@@ -81,7 +84,7 @@ type config struct {
 	RPCMaxClients        int    `long:"rpcmaxclients" description:"Max number of RPC clients for standard connections"`
 	RPCMaxWebsockets     int    `long:"rpcmaxwebsockets" description:"Max number of RPC websocket connections"`
 	RPCMaxConcurrentReqs int    `long:"rpcmaxconcurrentreqs" description:"Max number of concurrent RPC requests"`
-	DisableTLS           bool   `long:"notls" description:"Disable TLS for the RPC server"`
+	DisableTLS           bool   `long:"notls" description:"Disable TLS for the RPC server -- NOTE: This is only allowed if the RPC server is bound to localhost"`
 	RPCCert              string `long:"rpccert" description:"File containing the certificate file"`
 	RPCKey               string `long:"rpckey" description:"File containing the certificate key"`
 
@@ -98,15 +101,18 @@ type config struct {
 	RejectReplacement bool    `long:"rejectreplacement" description:"Reject transactions that attempt to replace existing mempool transactions"`
 
 	// Mining
-	BlockMinWeight    uint32 `long:"blockminweight" description:"Minimum block weight to be used when creating blocks"`
-	BlockMaxWeight    uint32 `long:"blockmaxweight" description:"Maximum block weight to be used when creating blocks"`
-	BlockMinSize      uint32 `long:"blockminsize" description:"Minimum block size in bytes to be used when creating blocks"`
-	BlockMaxSize      uint32 `long:"blockmaxsize" description:"Maximum block size in bytes to be used when creating blocks"`
-	BlockPrioritySize uint32 `long:"blockprioritysize" description:"Size in bytes for high-priority/low-fee transactions when creating blocks"`
-	miningAddrs       []string
+	BlockMinWeight    uint32   `long:"blockminweight" description:"Minimum block weight to be used when creating blocks"`
+	BlockMaxWeight    uint32   `long:"blockmaxweight" description:"Maximum block weight to be used when creating blocks"`
+	BlockMinSize      uint32   `long:"blockminsize" description:"Minimum block size in bytes to be used when creating blocks"`
+	BlockMaxSize      uint32   `long:"blockmaxsize" description:"Maximum block size in bytes to be used when creating blocks"`
+	BlockPrioritySize uint32   `long:"blockprioritysize" description:"Size in bytes for high-priority/low-fee transactions when creating blocks"`
+	MiningAddrs       []string `long:"miningaddr" description:"Add the specified payment address to the list of addresses to use for generated blocks -- At least one address is required if the generate option is set"`
 
 	// Peer bloom filters
 	NoPeerBloomFilters bool `long:"nopeerbloomfilters" description:"Disable bloom filtering support"`
+
+	// DNS Seed
+	DisableDNSSeed bool `long:"nodnsseed" description:"Disable DNS seeding for peers"`
 
 	// Checkpoints
 	DisableCheckpoints bool `long:"nocheckpoints" description:"Disable built-in checkpoints"`
@@ -184,8 +190,33 @@ func loadConfig() (*config, []string, error) {
 		}
 	}
 
+	// Resolve active network parameters.
+	// Multiple networks can't be selected simultaneously.
+	numNets := 0
+	if cfg.TestNet3 {
+		numNets++
+		activeNetParams = &chaincfg.TestNet3Params
+	}
+	if numNets == 0 {
+		numNets++
+		activeNetParams = &chaincfg.MainNetParams
+	}
+	if numNets > 1 {
+		str := "%s: the testnet and simnet params can't be " +
+			"used together -- choose one of the three"
+		err := fmt.Errorf(str, funcName)
+		fmt.Fprintln(os.Stderr, err)
+		return nil, nil, err
+	}
+	cfg.ActiveNetParams = activeNetParams
+
 	// Set the default port.
 	cfg.DefaultPort = activeNetParams.DefaultPort
+
+	// Set default RPC listeners if not specified.
+	if len(cfg.RPCListeners) == 0 {
+		cfg.RPCListeners = []string{"127.0.0.1:19445"}
+	}
 
 	// Append the network type to the data directory so it is "namespaced"
 	// per network.

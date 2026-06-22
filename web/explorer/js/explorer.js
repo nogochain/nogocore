@@ -16,15 +16,18 @@
 
   // ---- Constants ----
   var API_BASE = '/api/v1';
-  var REFRESH_INTERVAL = 15000;
+  var BLOCK_POLL_MS = 2000;   // lightweight height-only poll interval
+  var MEMPOOL_POLL_MS = 10000; // mempool-only refresh when no new blocks
 
   // ---- State ----
   var state = {
     currentView: 'dashboard',
     bestHeight: 0,
+    lastKnownHeight: -1,   // detect new blocks
     blocksPage: 1,
     blocksPerPage: 25,
     refreshTimer: null,
+    mempoolTimer: null,
     searchTimer: null,
   };
 
@@ -160,6 +163,8 @@
 
   function formatNumber(n) {
     if (n === null || n === undefined) return '--';
+    n = Number(n);
+    if (isNaN(n)) return '--';
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
     if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
@@ -197,6 +202,7 @@
       safeText('statHashrate', formatNumber(stats.estimated_hashrate || 0) + ' H/s');
 
       state.bestHeight = stats.block_height ? Number(stats.block_height) : 0;
+      state.lastKnownHeight = state.bestHeight;
       safeText('footerStats', 'Block ' + formatNumber(stats.block_height) + ' | ' + (stats.network || 'mainnet'));
 
       loadRecentBlocks();
@@ -286,8 +292,9 @@
     apiFetch('/stats').then(function(stats) {
       if (!stats) return;
       state.bestHeight = Number(stats.block_height) || 0;
+      state.lastKnownHeight = state.bestHeight;
 
-      var endHeight = state.bestHeight;
+      var endHeight = state.bestHeight - (state.blocksPage - 1) * state.blocksPerPage;
       var startHeight = Math.max(0, endHeight - state.blocksPerPage + 1);
 
       var promises = [];
@@ -449,8 +456,17 @@
         if (tx.vout && tx.vout.length > 0) {
           var outHtml = '';
           for (var j = 0; j < tx.vout.length; j++) {
+            var addr = tx.vout[j].address || '--';
+            var addrDisplay;
+            // Pseudo-address labels (OP_TRUE, OP_RETURN) are not clickable.
+            if (addr === 'Anyone-Can-Spend' || addr === 'OP_RETURN (data)' ||
+                addr === 'Empty Script' || addr === 'Unrecognized' || addr === '--') {
+              addrDisplay = '<span class="io-address">' + addr + '</span>';
+            } else {
+              addrDisplay = '<a class="io-address addr-link" href="#address/' + addr + '">' + truncateHash(addr, 8) + '</a>';
+            }
             outHtml += '<div class="io-item"><span class="io-label">#' + j + '</span><span class="io-value">' +
-              formatNOGO(tx.vout[j].value) + ' → <span class="io-address">' + truncateHash(tx.vout[j].address || '--', 8) + '</span></span></div>';
+              formatNOGO(tx.vout[j].value) + ' → ' + addrDisplay + '</span></div>';
           }
           outputsEl.innerHTML = outHtml;
         } else {
@@ -500,6 +516,7 @@
   }
 
   // ---- Search ----
+  function handleSearch(query) {
     query = query.trim();
     if (!query) return;
 
@@ -635,17 +652,30 @@
     debugLog('events bound OK');
   }
 
-  // ---- Auto-Refresh ----
+  // ---- Auto-Refresh (event-driven: polls height, full refresh only on new block) ----
   function startAutoRefresh() {
+    // Lightweight height-only poll — only triggers full reload when a new block arrives.
     state.refreshTimer = setInterval(function() {
-      if (state.currentView === 'dashboard') {
-        loadDashboardStats();
-      } else if (state.currentView === 'blocks') {
-        loadAllBlocks();
-      } else if (state.currentView === 'mempool') {
+      fetch(API_BASE + '/stats')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(stats) {
+          if (!stats) return;
+          var h = Number(stats.block_height) || 0;
+          if (h !== state.lastKnownHeight) {
+            state.lastKnownHeight = h;
+            // New block — full dashboard refresh.
+            if (state.currentView === 'dashboard') loadDashboardStats();
+            else if (state.currentView === 'blocks') loadAllBlocks();
+          }
+        });
+    }, BLOCK_POLL_MS);
+
+    // Mempool poll at a slower rate (independent of blocks).
+    state.mempoolTimer = setInterval(function() {
+      if (state.currentView === 'dashboard' || state.currentView === 'mempool') {
         loadMempool();
       }
-    }, REFRESH_INTERVAL);
+    }, MEMPOOL_POLL_MS);
   }
 
   // ---- Initialization ----

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nogochain/nogocommons/nogopow"
 	"github.com/nogochain/nogocommons/nogoutil"
 	"github.com/nogochain/nogocommons/chaincfg"
 	"github.com/nogochain/nogocommons/chainhash"
@@ -99,6 +100,7 @@ type BlockChain struct {
 	chainParams         *chaincfg.Params
 	timeSource          MedianTimeSource
 	indexManager        IndexManager
+	diffAdjuster        *nogopow.DifficultyAdjuster // NogoPow PI controller
 
 	// The following fields are calculated based upon the provided chain
 	// parameters.  They are also set when the instance is created and
@@ -2238,6 +2240,7 @@ func New(config *Config) (*BlockChain, error) {
 		chainParams:         params,
 		timeSource:          config.TimeSource,
 		indexManager:        config.IndexManager,
+		diffAdjuster:        newNogoPowAdjuster(params),
 		minRetargetTimespan: targetTimespan / adjustmentFactor,
 		maxRetargetTimespan: targetTimespan * adjustmentFactor,
 		blocksPerRetarget:   int32(targetTimespan / targetTimePerBlock),

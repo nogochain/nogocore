@@ -299,6 +299,9 @@ type GetBlockTemplateResult struct {
 	Target  string `json:"target,omitempty"`
 	Expires int64  `json:"expires,omitempty"`
 
+	// NogoPow extension: merkle root for miner PoW computation.
+	MerkleRoot string `json:"merkleroot,omitempty"`
+
 	// Mutations from BIP 0023.
 	MaxTime    int64    `json:"maxtime,omitempty"`
 	MinTime    int64    `json:"mintime,omitempty"`

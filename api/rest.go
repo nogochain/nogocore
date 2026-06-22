@@ -95,13 +95,24 @@ func (s *Server) registerRoutes() {
 }
 
 // registerStaticFiles serves the block explorer static web application.
+// Prefers an inline HTML file (index_inline.html) with embedded CSS/JS
+// for environments that do not support external resource loading.  Falls
+// back to serving from the web/explorer/ directory.
 func (s *Server) registerStaticFiles() {
 	// Try multiple locations for the web directory.
+	exeDir := "."
+	if exe, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exe)
+	}
 	candidates := []string{
+		filepath.Join(exeDir, "web", "explorer"),
+		filepath.Join(exeDir, "nogocore", "web", "explorer"),
+		filepath.Join(exeDir, "..", "web", "explorer"),
+		filepath.Join(exeDir, "..", "nogocore", "web", "explorer"),
+		filepath.Join(os.Getenv("NOGOCORE_HOME"), "web", "explorer"),
 		"web/explorer",
 		filepath.Join("..", "web", "explorer"),
 		filepath.Join(s.webDir, "web", "explorer"),
-		filepath.Join(os.Getenv("NOGOCORE_HOME"), "web", "explorer"),
 	}
 
 	var staticDir string
@@ -115,19 +126,33 @@ func (s *Server) registerStaticFiles() {
 		}
 	}
 
-	if staticDir != "" {
-		fs := http.FileServer(http.Dir(staticDir))
-		// Serve static files at root path, but NOT intercept API routes.
+	// Use inline HTML if available (single-file with embedded CSS/JS).
+	inlinePath := filepath.Join(staticDir, "index_inline.html")
+	if _, err := os.Stat(inlinePath); err == nil {
 		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			// Let API routes take precedence.
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/health" {
 				http.NotFound(w, r)
 				return
 			}
-			// Serve static files; fallback to index.html for SPA routing.
+			http.ServeFile(w, r, inlinePath)
+		})
+		log.Printf("[API] Serving inline explorer from: %s", inlinePath)
+		return
+	}
+
+	if staticDir != "" {
+		fs := http.FileServer(http.Dir(staticDir))
+		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+			if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/health" {
+				http.NotFound(w, r)
+				return
+			}
 			filePath := filepath.Join(staticDir, r.URL.Path)
 			if _, err := os.Stat(filePath); os.IsNotExist(err) {
-				// SPA fallback: serve index.html for client-side routing.
 				http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 				return
 			}

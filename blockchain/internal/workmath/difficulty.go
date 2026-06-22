@@ -83,6 +83,11 @@ func CompactToBig(compact uint32) *big.Int {
 		bn = bn.Neg(bn)
 	}
 
+	// This is the btcd original CompactToBig implementation.
+	// No byte-padding is needed — big.Int.Cmp handles all byte-length
+	// differences correctly through nat.cmp (Word-level comparison).
+	// btcd has relied on this for 15+ years without issue.
+
 	return bn
 }
 

@@ -298,6 +298,9 @@ func (b *BlockChain) thresholdState(prevNode *blockNode,
 	// The threshold state for the window that contains the genesis block is
 	// defined by definition.
 	confirmationWindow := int32(checker.MinerConfirmationWindow())
+	if confirmationWindow <= 0 {
+		return ThresholdDefined, nil
+	}
 	if prevNode == nil || (prevNode.height+1) < confirmationWindow {
 		return ThresholdDefined, nil
 	}

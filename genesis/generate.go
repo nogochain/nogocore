@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"time"
 
 	"github.com/nogochain/nogocommons/chaincfg"
 	"github.com/nogochain/nogocommons/nogopow"
@@ -21,10 +20,6 @@ import (
 const (
 	// genesisCoinbaseData is the coinbase script signature for the genesis block.
 	genesisCoinbaseData = "NogoCore Genesis Block"
-
-	// defaultGenesisTimestamp is the genesis block timestamp (Unix).
-	// 2026-06-19T00:00:00Z
-	defaultGenesisTimestamp = 1750262400
 )
 
 // GenesisBlockSpec describes the genesis block parameters before mining.
@@ -53,7 +48,7 @@ func Generate(params *chaincfg.Params) (*GenesisBlockSpec, error) {
 	}
 
 	spec := &GenesisBlockSpec{
-		Timestamp:   defaultGenesisTimestamp,
+		Timestamp:   params.GenesisBlock.Header.Timestamp.Unix(),
 		ParentHash:  "0000000000000000000000000000000000000000000000000000000000000000",
 		Coinbase:    "0000000000000000000000000000000000000000",
 		StateRoot:   "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
@@ -157,23 +152,23 @@ func CreateProtoHeader(spec *GenesisBlockSpec) (*nogopow.Header, error) {
 
 // DefaultGenesisSpec returns the hardcoded mainnet genesis specification.
 func DefaultGenesisSpec() *GenesisBlockSpec {
+	params := &chaincfg.MainNetParams
 	return &GenesisBlockSpec{
-		Timestamp:   defaultGenesisTimestamp,
+		Timestamp:   params.GenesisBlock.Header.Timestamp.Unix(),
 		ParentHash:  "0000000000000000000000000000000000000000000000000000000000000000",
 		Coinbase:    "0000000000000000000000000000000000000000",
 		StateRoot:   "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 		MerkleRoot:  "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
-		Difficulty:  0x207fffff,
+		Difficulty:  params.GenesisDifficultyBits,
 		GasLimit:    8_000_000,
 		ExtraData:   genesisCoinbaseData,
-		PreAlloc:    1_000_000 * 100_000_000,
-		GenesisAddr: "",
-		ShareAddr:   "",
+		PreAlloc:    params.PreAllocation,
+		GenesisAddr: params.GenesisAddress,
+		ShareAddr:   params.ShareAddress,
 	}
 }
 
-// GetGenesisTimestamp returns the real current time for the first non-genesis block,
-// or the default timestamp for the genesis block itself.
+// GetGenesisTimestamp returns the canonical genesis block timestamp for MainNet.
 func GetGenesisTimestamp() int64 {
-	return time.Now().Unix()
+	return chaincfg.MainNetParams.GenesisBlock.Header.Timestamp.Unix()
 }

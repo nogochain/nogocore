@@ -1339,17 +1339,11 @@ out:
 			case processBlockMsg:
 				_, isOrphan, err := sm.chain.ProcessBlock(
 					msg.block, msg.flags)
-				if err != nil {
-					msg.reply <- processBlockResponse{
-						isOrphan: false,
-						err:      err,
-					}
-				}
-
-				msg.reply <- processBlockResponse{
+				reply := processBlockResponse{
 					isOrphan: isOrphan,
-					err:      nil,
+					err:      err,
 				}
+				msg.reply <- reply
 
 			case isCurrentMsg:
 				msg.reply <- sm.current()

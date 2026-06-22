@@ -1,6 +1,6 @@
 module github.com/nogochain/nogocore
 
-go 1.25.10
+go 1.24.0
 
 require (
 	github.com/btcsuite/btclog v1.0.0
@@ -10,7 +10,7 @@ require (
 	github.com/decred/dcrd/lru v1.1.3
 	github.com/gorilla/websocket v1.5.3
 	github.com/jessevdk/go-flags v1.6.1
-	github.com/nogochain/nogocommons v1.0.0
+	github.com/nogochain/nogocommons v1.0.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.46.0
 	pgregory.net/rapid v1.3.0
@@ -30,3 +30,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
+replace github.com/nogochain/nogocommons => ../nogocommons

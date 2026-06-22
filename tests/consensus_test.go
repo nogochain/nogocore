@@ -8,6 +8,7 @@ package tests
 import (
 	"testing"
 
+	"github.com/nogochain/nogocommons/chaincfg"
 	"github.com/nogochain/nogocommons/nogopow"
 )
 
@@ -73,11 +74,12 @@ func TestNogoPowTargetTime(t *testing.T) {
 // TestNogoPowHeaderCreation verifies block header creation basics.
 func TestNogoPowHeaderCreation(t *testing.T) {
 	// Verify Header type can be constructed with default values.
+	genesisTime := uint64(chaincfg.MainNetParams.GenesisBlock.Header.Timestamp.Unix())
 	header := &nogopow.Header{
 		Version:    1,
 		Difficulty: nogopow.CompactToBig(0x207fffff),
 		GasLimit:   8_000_000,
-		Time:       1750262400,
+		Time:       genesisTime,
 		Nonce:      nogopow.BlockNonce{},
 	}
 

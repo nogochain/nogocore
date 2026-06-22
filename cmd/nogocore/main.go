@@ -22,6 +22,7 @@ import (
 	"github.com/nogochain/nogocore/api"
 	"github.com/nogochain/nogocore/blockchain"
 	"github.com/nogochain/nogocore/config"
+	"github.com/nogochain/nogocore/mining"
 )
 
 const (
@@ -113,12 +114,16 @@ func main() {
 
 	printBanner(activeParams, cfg.DataDir)
 
-	// Initialize database.
+	// Initialize database — try Open first (existing), Create if new.
 	dbPath := filepath.Join(cfg.DataDir, blockDbNamePrefix)
-	db, err := database.Create("ffldb", dbPath, activeParams.Net)
+	db, err := database.Open("ffldb", dbPath, activeParams.Net)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create database: %v\n", err)
-		os.Exit(1)
+		// Database doesn't exist yet — create a fresh one.
+		db, err = database.Create("ffldb", dbPath, activeParams.Net)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create database: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	defer db.Close()
 
@@ -159,21 +164,97 @@ func main() {
 		}
 	}()
 
+	// Initialize block template generator for mining RPC.
+	// Uses an empty transaction source (no mempool); blocks contain only
+	// the coinbase transaction — sufficient for testnet mining verification.
+	templateGenerator := mining.NewBlkTmplGenerator(
+		api.SimpleMiningPolicy(),
+		activeParams,
+		api.EmptyTxSource(),
+		chain,
+		blockchain.NewMedianTime(),
+	)
+
+	// Determine RPC listen address.
+	rpcAddr := "127.0.0.1:19445"
+	if len(cfg.RPCListeners) > 0 {
+		rpcAddr = cfg.RPCListeners[0]
+	}
+
+	// Set default RPC credentials if not provided.
+	rpcUser := cfg.RPCUser
+	rpcPass := cfg.RPCPass
+	if rpcUser == "" {
+		rpcUser = "nogocore"
+	}
+	if rpcPass == "" {
+		rpcPass = "nogocore"
+	}
+
+	// Start JSON-RPC mining server.
+	// Uses HTTPS+TLS with self-signed certificate (same as btcd/setupRPCListeners).
+	// Miners connect with InsecureSkipVerify — certs are auto-generated on first run.
+	rpcCertPath := filepath.Join(cfg.DataDir, "rpc.cert")
+	rpcKeyPath := filepath.Join(cfg.DataDir, "rpc.key")
+	rpcServer := api.StartRPCServer(rpcAddr, chain, activeParams,
+		templateGenerator, rpcUser, rpcPass, rpcCertPath, rpcKeyPath)
+
 	// Setup graceful shutdown.
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Println("\n=== NogoCore Node Started ===")
-	fmt.Printf("Network:     %s\n", activeParams.Name)
-	fmt.Printf("P2P Port:    %s\n", activeParams.DefaultPort)
-	fmt.Printf("Block Time:  %s\n", activeParams.TargetTimePerBlock)
+	fmt.Printf("Network:       %s\n", activeParams.Name)
+	fmt.Printf("P2P Port:      %s\n", activeParams.DefaultPort)
+	fmt.Printf("RPC Port:      %s\n", rpcAddr)
+	fmt.Printf("Block Time:    %s\n", activeParams.TargetTimePerBlock)
 	fmt.Println()
 	fmt.Println("Node is running. Press Ctrl+C to stop.")
+
+	// Start periodic UTXO cache flush goroutine to reduce the data-loss
+	// window between ffldb cache flushes.  Tuned to 30s so that at most
+	// 30s of UTXO state is at risk on a hard kill.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := chain.FlushUtxoCache(blockchain.FlushPeriodic); err != nil {
+					fmt.Fprintf(os.Stderr,
+						"Periodic UTXO cache flush warning: %v\n", err)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	// Wait for shutdown signal.
 	<-interrupt
 	fmt.Println("\nShutting down NogoCore node...")
+
+	// Stop periodic flush goroutine before proceeding.
+	close(done)
+
+	// Stop accepting new connections.
 	restServer.Shutdown(5 * time.Second)
+	rpcServer.Close()
+
+	// Flush all cached state to disk.  This call is explicit (not
+	// relying only on defer) so it happens before db.Close() and
+	// outside the defer stack, matching btcd's shutdown ordering.
+	fmt.Println("Flushing UTXO cache to disk...")
+	if err := chain.FlushUtxoCache(blockchain.FlushRequired); err != nil {
+		fmt.Fprintf(os.Stderr, "UTXO cache flush error: %v\n", err)
+	}
+
+	fmt.Println("Closing database...")
+	if err := db.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "Database close error: %v\n", err)
+	}
+
 	fmt.Println("Node shutdown complete.")
 }
 

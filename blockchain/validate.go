@@ -345,7 +345,8 @@ func CheckTransactionSanity(tx *nogoutil.Tx) error {
 // target difficulty.
 //
 // NogoPow replaces Bitcoin's SHA-256 PoW with a memory-hard NogoPow
-// proof-of-work algorithm using 256-bit Nonce space traversal.
+// proof-of-work algorithm using 256-bit Nonce space traversal and
+// matrix multiplication over Salsa20/8-generated matrix pools.
 //
 // The flags modify the behavior of this function as follows:
 //   - BFNoPoWCheck: The check to ensure the block hash is less than the target
@@ -369,15 +370,29 @@ func checkProofOfWork(header *wire.BlockHeader, powLimit *big.Int, flags Behavio
 	// The block hash must be less than the claimed target unless the flag
 	// to avoid proof of work checks is set.
 	if flags&BFNoPoWCheck != BFNoPoWCheck {
-		// Convert wire.BlockHeader to NogoPow header by mapping fields:
-		//   wire.PrevBlock → nogopow.ParentHash
-		//   wire.MerkleRoot → nogopow.Root (state root / tx merkle)
-		//   wire.Timestamp  → nogopow.Time
-		//   wire.Bits       → nogopow.Difficulty (compact → big.Int)
+		// Convert wire.BlockHeader to NogoPow header.  All fields must
+		// be populated identically to how the miner builds the header
+		// (via nogopow.FromBTCDHeader), because SealHash uses RLP
+		// encoding of the full header struct.  Any field mismatch
+		// changes the Keccak256 output and thus the PoW result.
+		//
+		// Field mapping (aligned with FromBTCDHeader):
+		//   wire.PrevBlock   → nogopow.ParentHash
+		//   (coinbase zero)  → nogopow.Coinbase  (miner also passes zero)
+		//   wire.MerkleRoot  → nogopow.Root + nogopow.TxHash
+		//   blockHeight      → nogopow.Number   (miner uses GBT height)
+		//   wire.Bits        → nogopow.GasLimit (uint64)
+		//   wire.Timestamp   → nogopow.Time
+		//   (nil)            → nogopow.Extra    (miner also passes nil)
+		//   wire.Nonce       → nogopow.BlockNonce (lower 4 bytes)
+		//   CompactToBig(bits) → nogopow.Difficulty
 		nogoHeader := &nogopow.Header{
 			ParentHash: nogopow.Hash(header.PrevBlock),
+			Coinbase:   nogopow.Address{},     // zero — matches miner's FromBTCDHeader
 			Root:       nogopow.Hash(header.MerkleRoot),
 			TxHash:     nogopow.Hash(header.MerkleRoot),
+			Number:     big.NewInt(0),          // matches miner's fixed value
+			GasLimit:   uint64(header.Bits),
 			Time:       uint64(header.Timestamp.Unix()),
 			Difficulty: new(big.Int).Set(target),
 		}
@@ -387,8 +402,16 @@ func checkProofOfWork(header *wire.BlockHeader, powLimit *big.Int, flags Behavio
 		binary.BigEndian.PutUint32(nonce[28:], header.Nonce)
 		nogoHeader.Nonce = nonce
 
-		// Compute NogoPow hash and verify against target.
-		powHash := nogoHeader.Hash()
+		// Compute NogoPow proof-of-work hash and verify against target.
+		// NogoPow algorithm:
+		//   seed      = ParentHash     (fixed, selects matrix pool)
+		//   blockHash = SealHash(header) (= Keccak256(rlp(header)), varies with Nonce)
+		//   powHash   = ComputePoWHash(blockHash, seed)
+		//               = hashMatrix(mulMatrixPooled(blockHash, CalcSeedCache(seed)))
+		seed := nogopow.Hash(header.PrevBlock)
+		blockHash := nogoHeader.Hash()
+		powHash := nogopow.ComputePoWHash(blockHash, seed)
+
 		hashNum := new(big.Int).SetBytes(powHash[:])
 		if hashNum.Cmp(target) > 0 {
 			str := fmt.Sprintf("block hash of %064x is higher than "+
@@ -732,20 +755,54 @@ func CheckSerializedHeight(coinbaseTx *nogoutil.Tx, wantHeight int32) error {
 }
 
 func compareScript(height int32, script []byte) error {
-	scriptHeight, err := encodeCoinbaseHeight(
-		int64(height),
-	)
-	if err != nil {
-		return err
-	}
+	// Build the expected script prefix using Bitcoin script number encoding
+	// (matched by standardCoinbaseScript → serializeScriptNum in mining.go).
+	// Format:
+	//   height 0       → OP_0 (0x00)
+	//   height 1..16   → OP_1..OP_16 (0x51..0x60)
+	//   height >= 17   → PUSHDATA(len) + LE bytes (minimal, sign-bit-aware)
+	expectedPrefix := serializeCoinbaseHeight(int64(height))
 
-	if !bytes.HasPrefix(script, scriptHeight) {
+	if !bytes.HasPrefix(script, expectedPrefix) {
 		str := fmt.Sprintf("the coinbase signature script does not "+
 			"minimally encode the height %d", height)
 		return ruleError(ErrBadCoinbaseHeight, str)
 	}
 
 	return nil
+}
+
+// serializeCoinbaseHeight returns the canonical Bitcoin script number prefix
+// for a block height.  This must match the encoding produced by
+// standardCoinbaseScript() in the mining package.
+func serializeCoinbaseHeight(n int64) []byte {
+	if n == 0 {
+		return []byte{0x00}
+	}
+	if n >= 1 && n <= 16 {
+		return []byte{byte(0x50 + n)}
+	}
+
+	var negative bool
+	if n < 0 {
+		n = -n
+		negative = true
+	}
+	buf := make([]byte, 0, 8)
+	for n > 0 {
+		buf = append(buf, byte(n&0xff))
+		n >>= 8
+	}
+	if buf[len(buf)-1]&0x80 != 0 {
+		buf = append(buf, 0x00)
+	}
+	if negative {
+		buf[len(buf)-1] |= 0x80
+	}
+	result := make([]byte, 0, len(buf)+1)
+	result = append(result, byte(len(buf)))
+	result = append(result, buf...)
+	return result
 }
 
 // CheckBlockHeaderContext performs several validation checks on the block header
@@ -1531,54 +1588,66 @@ func (b *BlockChain) CalcNextRequiredDifficulty(parentHash *chainhash.Hash, newB
 	return b.calcNextRequiredDifficulty(parentNode, newBlockTime)
 }
 
-// calcNextRequiredDifficulty calculates the required difficulty for the next
-// block after lastNode based on the NogoPow consensus rules. It uses the
-// target block time and implements dynamic difficulty adjustment based on the
-// ratio of actual block intervals to the target interval.
+// calcNextRequiredDifficulty v4.0 — Delegates to nogopow.DifficultyAdjuster
+// which implements the Kp‑P controller (Kp=0.5, clamp [0.5, 2.0], ±5% deadband).
+//
+// The DifficultyAdjuster lives in nogocommons/nogopow as the single source of
+// truth for difficulty calculation.  This function converts chain‑native types
+// (blockNode, time.Time) to the nogopow.Header interface and converts the
+// *big.Int difficulty result back to compact bits.
 func (b *BlockChain) calcNextRequiredDifficulty(lastNode *blockNode, newBlockTime time.Time) (uint32, error) {
-	// Genesis block or first block: use the starting difficulty.
+	// Genesis block: use starting difficulty from params.
 	if lastNode == nil {
-		return b.chainParams.PowLimitBits, nil
+		return b.chainParams.GenesisDifficultyBits, nil
 	}
 
-	targetTimePerBlock := b.chainParams.TargetTimePerBlock
-	if targetTimePerBlock <= 0 {
-		targetTimePerBlock = time.Minute // Default 60s for NogoCore.
+	// Convert parent target → difficulty for the DifficultyAdjuster.
+	// The adjuster expects the difficulty value (powLimit / target), not
+	// the raw target, because it computes newDifficulty = parentDiff × adj.
+	parentTarget := CompactToBig(lastNode.bits)
+	powLimit := CompactToBig(b.chainParams.PowLimitBits)
+	parentDifficulty := new(big.Int).Div(powLimit, parentTarget)
+	if parentDifficulty.Sign() == 0 {
+		parentDifficulty = big.NewInt(1)
 	}
 
-	// Calculate the actual time since the parent block.
-	actualTimeDelta := newBlockTime.Sub(lastNode.Header().Timestamp)
-	if actualTimeDelta <= 0 {
-		actualTimeDelta = 1 * time.Second // Prevent division by zero.
+	// Build parent header for the DifficultyAdjuster.
+	// Only Time and Difficulty are required by CalcDifficulty; Number and
+	// ParentHash are populated for completeness but are unused in v4.0.
+	parentHeader := &nogopow.Header{
+		Time:       uint64(lastNode.timestamp),
+		Difficulty: parentDifficulty,
+		Number:     big.NewInt(int64(lastNode.height)),
+	}
+	copy(parentHeader.ParentHash[:], lastNode.hash[:])
+
+	// Delegate to the Kp‑P controller in the consensus layer.
+	newDifficulty := b.diffAdjuster.CalcDifficulty(uint64(newBlockTime.Unix()), parentHeader)
+
+	// Convert difficulty → target: newTarget = powLimit / newDifficulty
+	newTarget := new(big.Int).Div(powLimit, newDifficulty)
+
+	// Clamp to pow limit (target must not exceed the easiest allowed).
+	if newTarget.Cmp(powLimit) > 0 {
+		newTarget.Set(powLimit)
 	}
 
-	// Compute the adjustment ratio: target / actual.
-	// If blocks are too fast (actual < target), increase difficulty.
-	// If blocks are too slow (actual > target), decrease difficulty.
-	ratio := float64(targetTimePerBlock) / float64(actualTimeDelta)
-
-	// Clamp the ratio to prevent extreme swings.
-	// Allow at most 4x increase or 1/4 decrease per block.
-	if ratio > 4.0 {
-		ratio = 4.0
-	} else if ratio < 0.25 {
-		ratio = 0.25
-	}
-
-	// Convert current bits to a compact difficulty representation.
-	currentBits := lastNode.Header().Bits
-
-	// Apply the ratio to compute new compact bits.
-	// Higher compact bits value = lower difficulty (more zeros allowed).
-	// Multiply compact bits by ratio to adjust difficulty.
-	newBits := uint32(float64(currentBits) * ratio)
-
-	// Clamp to pow limit.
+	// Convert target → compact bits.
+	newBits := BigToCompact(newTarget)
 	if newBits > b.chainParams.PowLimitBits {
 		newBits = b.chainParams.PowLimitBits
 	}
 
 	return newBits, nil
+}
+
+// newNogoPowAdjuster creates a NogoPow DifficultyAdjuster (v4.0 Kp‑P
+// controller) configured from the chain parameters.
+func newNogoPowAdjuster(params *chaincfg.Params) *nogopow.DifficultyAdjuster {
+	return nogopow.NewDifficultyAdjuster(&nogopow.ConsensusParams{
+		BlockTimeTargetSeconds:   int(params.TargetTimePerBlock.Seconds()),
+		MinDifficulty:            int(params.MinDifficulty),
+	})
 }
 
 // encodeCoinbaseHeight encodes a block height for coinbase script.

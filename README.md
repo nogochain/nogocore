@@ -1,0 +1,291 @@
+# NogoCore — Full Node for the NogoChain Network
+
+NogoCore is the reference full-node implementation for the **NogoChain** blockchain ecosystem. It uses the **NogoPow** consensus engine and a battle-tested **UTXO model**, built on the mature P2P and database infrastructure inherited from btcd.
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      nogoctl CLI                         │
+│              (Management & Query Tool)                    │
+└──────────────────────┬──────────────────────────────────┘
+                       │ JSON-RPC (HTTPS+TLS, Basic Auth)
+┌──────────────────────▼──────────────────────────────────┐
+│                   NogoCore Node                          │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐   │
+│  │ REST API │  │ JSON-RPC │  │   Block Explorer      │   │
+│  │ :8080    │  │ :19445   │  │   (Web UI)            │   │
+│  └────┬─────┘  └────┬─────┘  └──────────┬───────────┘   │
+│       │              │                    │               │
+│  ┌────▼──────────────▼────────────────────▼───────────┐  │
+│  │                  API Layer                           │  │
+│  │         (explorer/api.go, api/rpc.go)               │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────▼──────────────────────────────┐  │
+│  │               Blockchain Engine                      │  │
+│  │   • Block validation & connection                    │  │
+│  │   • UTXO cache management                           │  │
+│  │   • Chain reorganization                            │  │
+│  │   • NogoPow difficulty adjustment (PI controller)   │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────▼──────────────────────────────┐  │
+│  │            Block Template Generator                  │  │
+│  │   • Coinbase construction                           │  │
+│  │   • Transaction selection (fee/priority)            │  │
+│  │   • Merkle root calculation                         │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────▼──────────────────────────────┐  │
+│  │                   Data Layer                         │  │
+│  │   ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
+│  │   │ Mempool  │  │  ffldb   │  │  Config System   │  │  │
+│  │   └──────────┘  └──────────┘  └──────────────────┘  │  │
+│  └─────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+### Prerequisites
+
+- **Go 1.21+**
+- GCC or equivalent C compiler (for `ffldb` database backend)
+
+### Build
+
+```bash
+# Clone the repository
+git clone https://github.com/nogochain/nogocore.git
+cd nogocore
+
+# Build the full node
+go build ./cmd/nogocore
+
+# Build the CLI management tool
+go build ./cmd/nogoctl
+```
+
+### Configure
+
+Create a configuration file at `~/nogocore/nogocore.conf`:
+
+```json
+{
+    "network": "mainnet",
+    "homedir": "~/nogocore",
+    "rpclisten": ["127.0.0.1:19445"],
+    "rpcuser": "nogocore",
+    "rpcpass": "nogocore",
+    "debuglevel": "info",
+    "maxpeers": 125
+}
+```
+
+### Run
+
+```bash
+# Mainnet (default)
+./nogocore
+
+# Testnet
+./nogocore --testnet
+
+# With custom data directory
+./nogocore --datadir=/path/to/data
+
+# Check version
+./nogocore --version
+```
+
+### Using nogoctl
+
+```bash
+# Get node status
+./nogoctl getinfo
+
+# Get block by height
+./nogoctl getblock 1000
+
+# Get balance for an address
+./nogoctl getbalance 1Dqbr8L29Yirs8EVhNmmikB4DLMwU5Akm7
+
+# Get block subsidy at height
+./nogoctl getblocksubsidy 525600
+```
+
+## Documentation
+
+Detailed documentation is available in the `docs/02-nogocore/` directory:
+
+| Document | Description |
+|---|---|
+| [Overview](docs/02-nogocore/README.md) | Module overview and architecture |
+| [Deployment Guide](docs/02-nogocore/Deployment-Guide.md) | Full deployment manual |
+| [API Reference](docs/02-nogocore/API-Reference.md) | JSON-RPC and REST API reference |
+| [Config Reference](docs/02-nogocore/Config-Reference.md) | All configuration parameters |
+| [Economic Model](docs/02-nogocore/Economic-Model.md) | Token economics and reward model |
+| [Architecture Design](docs/02-nogocore/Architecture-Design.md) | Internal architecture details |
+
+## Key Features
+
+- **NogoPow Consensus**: PI-controller difficulty adjustment targeting 60-second blocks
+- **UTXO Model**: Battle-tested transaction model with coinbase maturity (100 blocks)
+- **Dual API**: REST API (port 8080) for queries + JSON-RPC (port 19445) for mining
+- **Self-Signed TLS**: Auto-generated certificates for RPC security
+- **Block Explorer**: Built-in web UI for chain exploration
+- **Fee Burning**: Transaction fees are burned (deflationary), not added to coinbase
+- **Chain Compression**: Pruned block storage for long-running nodes
+
+## License
+
+ISC License — see the LICENSE file for details.
+
+---
+
+# NogoCore — NogoChain 网络全节点
+
+NogoCore 是 **NogoChain** 区块链生态系统的参考全节点实现。它使用 **NogoPow** 共识引擎和经过实战检验的 **UTXO 模型**，构建于继承自 btcd 的成熟 P2P 和数据库基础设施之上。
+
+## 架构概览
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      nogoctl CLI                         │
+│                  (管理与查询工具)                         │
+└──────────────────────┬──────────────────────────────────┘
+                       │ JSON-RPC (HTTPS+TLS, Basic Auth)
+┌──────────────────────▼──────────────────────────────────┐
+│                   NogoCore 节点                           │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐   │
+│  │ REST API │  │ JSON-RPC │  │   区块浏览器 (Web UI)  │   │
+│  │ :8080    │  │ :19445   │  │                       │   │
+│  └────┬─────┘  └────┬─────┘  └──────────┬───────────┘   │
+│       │              │                    │               │
+│  ┌────▼──────────────▼────────────────────▼───────────┐  │
+│  │                  API 层                              │  │
+│  │         (explorer/api.go, api/rpc.go)               │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────▼──────────────────────────────┐  │
+│  │               区块链引擎                              │  │
+│  │   • 区块验证与连接                                   │  │
+│  │   • UTXO 缓存管理                                    │  │
+│  │   • 链重组                                           │  │
+│  │   • NogoPow 难度调整 (PI 控制器)                     │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────▼──────────────────────────────┐  │
+│  │            区块模板生成器                             │  │
+│  │   • Coinbase 构建                                    │  │
+│  │   • 交易选择 (费用/优先级)                           │  │
+│  │   • Merkle 根计算                                    │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────▼──────────────────────────────┐  │
+│  │                   数据层                              │  │
+│  │   ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
+│  │   │ 交易池   │  │  ffldb   │  │   配置系统       │  │  │
+│  │   └──────────┘  └──────────┘  └──────────────────┘  │  │
+│  └─────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+```
+
+## 快速开始
+
+### 环境要求
+
+- **Go 1.21+**
+- GCC 或等效 C 编译器（用于 `ffldb` 数据库后端）
+
+### 构建
+
+```bash
+# 克隆仓库
+git clone https://github.com/nogochain/nogocore.git
+cd nogocore
+
+# 构建全节点
+go build ./cmd/nogocore
+
+# 构建 CLI 管理工具
+go build ./cmd/nogoctl
+```
+
+### 配置
+
+在 `~/nogocore/nogocore.conf` 创建配置文件：
+
+```json
+{
+    "network": "mainnet",
+    "homedir": "~/nogocore",
+    "rpclisten": ["127.0.0.1:19445"],
+    "rpcuser": "nogocore",
+    "rpcpass": "nogocore",
+    "debuglevel": "info",
+    "maxpeers": 125
+}
+```
+
+### 运行
+
+```bash
+# 主网 (默认)
+./nogocore
+
+# 测试网
+./nogocore --testnet
+
+# 自定义数据目录
+./nogocore --datadir=/path/to/data
+
+# 查看版本
+./nogocore --version
+```
+
+### 使用 nogoctl
+
+```bash
+# 获取节点状态
+./nogoctl getinfo
+
+# 按高度获取区块
+./nogoctl getblock 1000
+
+# 查询地址余额
+./nogoctl getbalance 1Dqbr8L29Yirs8EVhNmmikB4DLMwU5Akm7
+
+# 查询指定高度的区块奖励
+./nogoctl getblocksubsidy 525600
+```
+
+## 文档
+
+详细文档见 `docs/02-nogocore/` 目录：
+
+| 文档 | 描述 |
+|---|---|
+| [概览](docs/02-nogocore/README.md) | 模块概览与架构 |
+| [部署指南](docs/02-nogocore/Deployment-Guide.md) | 完整部署手册 |
+| [API 参考](docs/02-nogocore/API-Reference.md) | JSON-RPC 和 REST API 参考 |
+| [配置参考](docs/02-nogocore/Config-Reference.md) | 全部配置参数 |
+| [经济模型](docs/02-nogocore/Economic-Model.md) | 代币经济学与奖励模型 |
+| [架构设计](docs/02-nogocore/Architecture-Design.md) | 内部架构详解 |
+
+## 核心特性
+
+- **NogoPow 共识**: PI 控制器难度调整，目标出块时间 60 秒
+- **UTXO 模型**: 经过实战检验的交易模型，Coinbase 成熟度为 100 个区块
+- **双 API**: REST API (端口 8080) 用于查询 + JSON-RPC (端口 19445) 用于挖矿
+- **自签名 TLS**: 自动生成证书保障 RPC 安全
+- **区块浏览器**: 内置 Web UI 用于链浏览
+- **费用销毁**: 交易手续费被销毁（通缩），不添加到 Coinbase
+- **链压缩**: 为长期运行的节点提供精简区块存储
+
+## 许可证
+
+ISC License — 详见 LICENSE 文件。

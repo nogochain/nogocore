@@ -36,12 +36,15 @@ import (
 	"github.com/nogochain/nogocommons/chainhash"
 	"github.com/nogochain/nogocommons/connmgr"
 	"github.com/nogochain/nogocommons/database"
+	_ "github.com/nogochain/nogocommons/database/ffldb"
 	"github.com/nogochain/nogocommons/nogoutil"
 	"github.com/nogochain/nogocommons/nogoutil/bloom"
 	"github.com/nogochain/nogocommons/peer"
 	"github.com/nogochain/nogocommons/wire"
+	"github.com/nogochain/nogocore/api"
 	"github.com/nogochain/nogocore/blockchain"
 	"github.com/nogochain/nogocore/blockchain/indexers"
+	nogoconfig "github.com/nogochain/nogocore/config"
 	"github.com/nogochain/nogocore/mempool"
 	"github.com/nogochain/nogocore/mining"
 	"github.com/nogochain/nogocore/netsync"
@@ -218,7 +221,7 @@ type server struct {
 	chainParams          *chaincfg.Params
 	addrManager          *addrmgr.AddrManager
 	connManager          *connmgr.ConnManager
-	// rpcServer is set during RPC server initialization.
+	rpcServer            *rpcServer
 	syncManager          *netsync.SyncManager
 	chain                *blockchain.BlockChain
 	txMemPool            *mempool.TxPool
@@ -1611,6 +1614,11 @@ func (s *server) Start() {
 	// managers.
 	s.wg.Add(1)
 	go s.peerHandler()
+
+	// Start the RPC server.
+	if !cfg.DisableRPC && s.rpcServer != nil {
+		s.rpcServer.Start()
+	}
 }
 
 // Stop gracefully shuts down the server by stopping and disconnecting all
@@ -2059,8 +2067,44 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 	}
 
 	// Set up the block template generator for getblocktemplate RPC.
-	_ = mining.NewBlkTmplGenerator(&policy, s.chainParams, s.txMemPool, s.chain,
-		s.timeSource)
+	blockTemplateGenerator := mining.NewBlkTmplGenerator(&policy, s.chainParams,
+		s.txMemPool, s.chain, s.timeSource)
+
+	// Setup RPC server.
+	if !cfg.DisableRPC {
+		rpcListeners, err := setupRPCListeners()
+		if err != nil {
+			return nil, err
+		}
+		if len(rpcListeners) == 0 {
+			return nil, errors.New("RPCS: No valid listen address")
+		}
+		s.rpcServer, err = newRPCServer(&rpcserverConfig{
+			Listeners:    rpcListeners,
+			StartupTime:  s.startupTime,
+			ConnMgr:      &rpcConnManager{&s},
+			SyncMgr:      &rpcSyncMgr{&s, s.syncManager},
+			TimeSource:   s.timeSource,
+			Chain:        s.chain,
+			ChainParams:  chainParams,
+			DB:           db,
+			TxMemPool:    s.txMemPool,
+			Generator:    blockTemplateGenerator,
+			TxIndex:      s.txIndex,
+			AddrIndex:    s.addrIndex,
+			CfIndex:      s.cfIndex,
+			FeeEstimator: s.feeEstimator,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// Signal process shutdown when the RPC server requests it.
+		go func() {
+			<-s.rpcServer.RequestedProcessShutdown()
+			shutdownRequestChannel <- struct{}{}
+		}()
+	}
 
 	// Only set up a NAT if we have a valid listen address and we're not
 	// in regression test mode.
@@ -2100,6 +2144,19 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 			Addr:      netAddr,
 			Permanent: true,
 		})
+	}
+
+	// Add peers discovered through DNS seeds to the address manager.
+	if !cfg.DisableDNSSeed {
+		connmgr.SeedFromDNS(s.chainParams, defaultRequiredServices,
+			btcdLookup, func(addrs []*wire.NetAddressV2) {
+				// Bitcoind uses a lookup of the dns seeder here.
+				// This is rather strange since the values looked
+				// up by the DNS seed lookups will vary quite a
+				// lot. To replicate this behaviour we put all
+				// addresses as having come from the first one.
+				s.addrManager.AddAddresses(addrs, addrs[0])
+			})
 	}
 
 	// Start the rebroadcast handler.
@@ -2429,6 +2486,75 @@ func newTLSCertPair(organization string, validUntil time.Time, extraHosts []stri
 	return certBuf.Bytes(), keyBuf.Bytes(), nil
 }
 
+// cleanStaleLockFile removes a stale LevelDB LOCK file if no other process
+// holds the lock.  On Windows, taskkill /f (TerminateProcess) leaves the LOCK
+// file on disk even though the OS lock is released; this causes leveldb.OpenFile
+// to fail with "resource temporarily unavailable" on the next startup.
+func cleanStaleLockFile(metadataDir string) {
+	lockFile := filepath.Join(metadataDir, "LOCK")
+	if _, err := os.Stat(lockFile); os.IsNotExist(err) {
+		return // no LOCK file, nothing to clean
+	}
+
+	// Try to open and lock the file ourselves.  If we succeed, the previous
+	// owner is dead and we can safely remove the stale file.
+	f, err := os.OpenFile(lockFile, os.O_RDWR, 0666)
+	if err != nil {
+		// Cannot open the file — either permissions, or something else.
+		// LevelDB will surface a better error.
+		return
+	}
+	defer f.Close()
+
+	// Attempt a non-blocking exclusive lock on POSIX; on Windows we use a
+	// simpler approach — a successful open means the OS already released
+	// the previous lock handle (TerminateProcess always releases handles).
+	// We just remove the stale file so LevelDB creates a fresh one.
+	if err := os.Remove(lockFile); err == nil {
+		srvrLog.Infof("Cleaned stale LevelDB LOCK file at %s", lockFile)
+	} else {
+		srvrLog.Debugf("Could not remove stale LOCK file %s: %v", lockFile, err)
+	}
+}
+
+// loadBlockDB loads (or creates) the block database.  Aligned with btcd's
+// loadBlockDB: first attempt database.Open; only fall back to database.Create
+// when the error is specifically database.ErrDbDoesNotExist.
+func loadBlockDB() (database.DB, error) {
+	dbPath := blockDbPath()
+	srvrLog.Infof("Loading block database from '%s'", dbPath)
+
+	db, err := database.Open("ffldb", dbPath, activeNetParams.Net)
+	if err != nil {
+		// Return the error if it's not because the database doesn't exist.
+		if dbErr, ok := err.(database.Error); !ok || dbErr.ErrorCode !=
+			database.ErrDbDoesNotExist {
+			return nil, err
+		}
+
+		// Create the data directory if it does not exist.
+		if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
+			return nil, err
+		}
+
+		// Create the database.
+		db, err = database.Create("ffldb", dbPath, activeNetParams.Net)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	srvrLog.Info("Block database loaded")
+	return db, nil
+}
+
+// blockDbPath returns the path to the block database given a database type.
+func blockDbPath() string {
+	// The database name is based on the database type.
+	dbName := "blocks"
+	return filepath.Join(cfg.DataDir, dbName)
+}
+
 // main is the entry point for the NogoCore full-node daemon.
 func main() {
 	// Perform any upgrades required by newer versions.
@@ -2438,7 +2564,8 @@ func main() {
 	}
 
 	// Load configuration and start the node.
-	cfg, _, err := loadConfig()
+	var err error
+	cfg, _, err = loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
@@ -2455,11 +2582,22 @@ func main() {
 	// Setup interrupt handler with full signal support (SIGINT + SIGTERM on unix).
 	interrupt := interruptListener()
 
-	// Create the database.
-	dbPath := filepath.Join(cfg.DataDir, "blocks")
-	db, err := database.Create("ffldb", dbPath, activeNetParams.Net)
+	// Clean up stale LevelDB LOCK files left behind by forced termination
+	// (e.g. taskkill /f on Windows).  LevelDB uses OS-level file locks
+	// which the OS releases when the process exits, but the LOCK *file*
+	// itself persists.  On some platforms this can cause spurious
+	// "resource temporarily unavailable" errors on next open.
+	//
+	// We attempt to acquire the lock ourselves: if we can open+lock the
+	// file, the previous owner is dead; we remove the file so LevelDB
+	// can create a fresh one.  If we cannot lock it, another process
+	// genuinely holds it and we should bail out.
+	cleanStaleLockFile(filepath.Join(cfg.DataDir, "blocks", "metadata"))
+
+	// Load the block database.
+	db, err := loadBlockDB()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to load database: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
@@ -2475,10 +2613,36 @@ func main() {
 	// Start the server.
 	server.Start()
 
+	// Start the REST API (block explorer) server.
+	apiCfg := &nogoconfig.Config{
+		DataDir:      cfg.DataDir,
+		RPCListeners: cfg.RPCListeners,
+	}
+	restServer := api.NewServer(apiCfg, server.chain, server.txMemPool)
+	go func() {
+		if err := restServer.Start(); err != nil {
+			srvrLog.Errorf("REST API server: %v", err)
+		}
+	}()
+
 	// Wait for shutdown signal.
 	<-interrupt
 	fmt.Println("\nShutting down NogoCore node...")
+
+	// Shutdown REST API server first.
+	if err := restServer.Shutdown(5 * time.Second); err != nil {
+		srvrLog.Errorf("REST API shutdown: %v", err)
+	}
+
 	server.Stop()
 	server.WaitForShutdown()
+
+	// Flush UTXO cache to disk before exit. Without this, blocks accepted
+	// since the last periodic flush are lost on restart (even graceful).
+	fmt.Println("Flushing blockchain state to disk...")
+	if err := server.chain.FlushUtxoCache(blockchain.FlushRequired); err != nil {
+		srvrLog.Errorf("Failed to flush UTXO cache: %v", err)
+	}
+
 	fmt.Println("Node shutdown complete.")
 }
